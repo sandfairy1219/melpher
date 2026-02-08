@@ -429,6 +429,40 @@ export default function Graph() {
           ctx.textBaseline = 'top'
           ctx.fillText(label, lx, ly)
         }
+        // Find and draw roots (with offset applied, within domain)
+        const rootsXMin = fn.domainMin !== null ? fn.domainMin : xMin - fn.dx
+        const rootsXMax = fn.domainMax !== null ? fn.domainMax : xMax - fn.dx
+        const roots = findRoots(compiled, rootsXMin, rootsXMax)
+        for (const rx of roots) {
+          if (!inDomain(rx, fn)) continue
+          const sx = toScreenX(rx + fn.dx)
+          const sy = toScreenY(0 + fn.dy)
+          if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) continue
+
+          // Dot
+          ctx.beginPath()
+          ctx.arc(sx, sy, 5, 0, Math.PI * 2)
+          ctx.fillStyle = fn.color
+          ctx.fill()
+          ctx.strokeStyle = '#ffffff'
+          ctx.lineWidth = 1.5
+          ctx.stroke()
+
+          // Label
+          const rootLabel = `근 (${formatNumber(rx + fn.dx)}, ${formatNumber(fn.dy)})`
+          ctx.font = 'bold 11px sans-serif'
+          const rootTextWidth = ctx.measureText(rootLabel).width
+          const rootPadding = 4
+          const rlx = Math.min(Math.max(sx + 8, rootPadding), w - rootTextWidth - rootPadding)
+          const rly = sy + 10
+
+          ctx.fillStyle = 'rgba(15, 22, 41, 0.85)'
+          ctx.fillRect(rlx - 3, rly - 1, rootTextWidth + 6, 15)
+          ctx.fillStyle = fn.color
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'top'
+          ctx.fillText(rootLabel, rlx, rly)
+        }
       } catch {
         // Invalid expression, skip
       }
@@ -578,26 +612,49 @@ export default function Graph() {
           prev.map((f, i) => i === gi ? { ...f, dx: bestDx, dy: bestDy } : f)
         )
       } else if (magnetMode === 'roots') {
-        const roots = findRoots(compiled, visXMin - fn.dx, visXMax - fn.dx)
-        if (roots.length === 0) return
+        // 화면에서 y=0을 지나는 대략적 x 위치 찾기 (displayed: f(x-dx)+dy)
+        const approxRoots: number[] = []
+        const samples = 500
+        const sampleStep = (visXMax - visXMin) / samples
+        let prevVal: number | null = null
 
-        // 기준점: 현재 그래프의 중심(cx)에서 dx를 뺀 x좌표 (즉, 그래프의 현재 이동된 x)
-        const { cx } = view
-        const currentX = cx
+        for (let i = 0; i <= samples; i++) {
+          const x = visXMin + i * sampleStep
+          try {
+            const val = (compiled.evaluate({ x: x - fn.dx }) as number) + fn.dy
+            if (!isFinite(val) || isNaN(val)) { prevVal = null; continue }
+            if (prevVal !== null && prevVal * val < 0) {
+              approxRoots.push(x - sampleStep / 2)
+            }
+            if (Math.abs(val) < 1e-12) {
+              approxRoots.push(x)
+            }
+            prevVal = val
+          } catch { prevVal = null }
+        }
 
-        let bestDx = fn.dx, bestDist = Infinity
-        for (const rx of roots) {
-          // dx를 조정해서 현재 그래프의 중심이 root(rx)에 오도록
-          const candidateDx = fn.dx + (rx + fn.dx - currentX)
-          const dist = Math.abs((currentX + candidateDx) - (rx + candidateDx))
-          if (dist < bestDist) {
-            bestDist = dist
-            bestDx = candidateDx
+        if (approxRoots.length === 0) return
+
+        // 각 근 근처 정수 x에서 dy를 조정하여 근이 정수에 오도록
+        let bestDy = fn.dy, bestDist = Infinity
+        for (const rx of approxRoots) {
+          for (const intX of [Math.floor(rx), Math.ceil(rx)]) {
+            try {
+              const fVal = compiled.evaluate({ x: intX - fn.dx }) as number
+              if (!isFinite(fVal)) continue
+              // f(intX - dx) + dy_new = 0 → dy_new = -f(intX - dx)
+              const candidateDy = -fVal
+              const dist = Math.abs(candidateDy - fn.dy)
+              if (dist < bestDist) {
+                bestDist = dist
+                bestDy = candidateDy
+              }
+            } catch { continue }
           }
         }
 
         setFunctions((prev) =>
-          prev.map((f, i) => i === gi ? { ...f, dx: bestDx } : f)
+          prev.map((f, i) => i === gi ? { ...f, dy: bestDy } : f)
         )
       }
     } catch { /* skip */ }
@@ -839,6 +896,31 @@ export default function Graph() {
       .filter((e) => e.extrema.length > 0)
   }, [functions, view, getCanvasSize])
 
+  // Compute roots for the info panel
+  const allRoots = useMemo(() => {
+    const { w } = getCanvasSize()
+    const { cx, scale } = view
+    const xMin = (0 - w / 2) / scale + cx
+    const xMax = (w - w / 2) / scale + cx
+
+    return functions
+      .filter((fn) => fn.visible)
+      .map((fn) => {
+        try {
+          const compiled = compile(fn.expr)
+          const roots = findRoots(compiled, xMin - fn.dx, xMax - fn.dx)
+          return {
+            expr: fn.expr,
+            color: fn.color,
+            roots: roots.map((rx) => rx + fn.dx),
+          }
+        } catch {
+          return { expr: fn.expr, color: fn.color, roots: [] as number[] }
+        }
+      })
+      .filter((e) => e.roots.length > 0)
+  }, [functions, view, getCanvasSize])
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') addFunction()
   }
@@ -1034,6 +1116,29 @@ export default function Graph() {
                     </span>
                     <span className="graph-extrema-coord">
                       ({formatNumber(ext.x)}, {formatNumber(ext.y)})
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {allRoots.length > 0 && (
+        <div className="graph-extrema-panel">
+          <div className="graph-extrema-title">근 (영점)</div>
+          {allRoots.map((entry, i) => (
+            <div key={i} className="graph-extrema-fn">
+              <code className="graph-extrema-expr" style={{ color: entry.color }}>
+                {entry.expr}
+              </code>
+              <div className="graph-extrema-list">
+                {entry.roots.map((rx, j) => (
+                  <span key={j} className="graph-extrema-item">
+                    <span className="graph-extrema-badge root">근</span>
+                    <span className="graph-extrema-coord">
+                      x = {formatNumber(rx)}
                     </span>
                   </span>
                 ))}
@@ -1392,6 +1497,11 @@ export default function Graph() {
         .graph-extrema-badge.min {
           background: rgba(76, 175, 80, 0.15);
           color: #4caf50;
+        }
+
+        .graph-extrema-badge.root {
+          background: rgba(38, 198, 218, 0.15);
+          color: #26c6da;
         }
 
         .graph-extrema-coord {

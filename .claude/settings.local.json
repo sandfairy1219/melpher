@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(./node_modules/.bin/tsc:*)"
+      "Bash(./node_modules/.bin/tsc:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite build:*)"
     ]
   }
 }
