@@ -18,8 +18,6 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">Melpher</h1>
-        <p className="app-subtitle">Math Helper</p>
       </header>
 
       <nav className="tab-bar">
