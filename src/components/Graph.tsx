@@ -314,20 +314,18 @@ export default function Graph() {
           ctx.lineWidth = 8
           ctx.beginPath()
           let started = false
-          let lastInDomain = false
           for (let px = 0; px <= w; px += 2) {
             const x = toWorldX(px) - fn.dx
             const inSeg = inDomain(x, fn)
-            if (!inSeg) { started = false; lastInDomain = false; continue }
+            if (!inSeg) { started = false; continue }
             try {
               const y = (compiled.evaluate({ x }) as number) + fn.dy
-              if (!isFinite(y) || isNaN(y)) { started = false; lastInDomain = false; continue }
+              if (!isFinite(y) || isNaN(y)) { started = false; continue }
               const sy = toScreenY(y)
-              if (sy < -h * 2 || sy > h * 3) { started = false; lastInDomain = false; continue }
+              if (sy < -h * 2 || sy > h * 3) { started = false; continue }
               if (!started) { ctx.moveTo(px, sy); started = true }
               else ctx.lineTo(px, sy)
-              lastInDomain = true
-            } catch { started = false; lastInDomain = false }
+            } catch { started = false }
           }
           ctx.stroke()
         }
@@ -336,20 +334,19 @@ export default function Graph() {
         ctx.lineWidth = isSelected ? 3.5 : 2.5
         ctx.beginPath()
         let started = false
-        let lastInDomain = false
         const pixelStep = 2
         for (let px = 0; px <= w; px += pixelStep) {
           const x = toWorldX(px) - fn.dx
           const inSeg = inDomain(x, fn)
-          if (!inSeg) { started = false; lastInDomain = false; continue }
+          if (!inSeg) { started = false; continue }
           try {
             const y = (compiled.evaluate({ x }) as number) + fn.dy
             if (!isFinite(y) || isNaN(y)) {
-              started = false; lastInDomain = false; continue
+              started = false; continue
             }
             const sy = toScreenY(y)
             if (sy < -h * 2 || sy > h * 3) {
-              started = false; lastInDomain = false; continue
+              started = false; continue
             }
             if (!started) {
               ctx.moveTo(px, sy)
@@ -357,8 +354,7 @@ export default function Graph() {
             } else {
               ctx.lineTo(px, sy)
             }
-            lastInDomain = true
-          } catch { started = false; lastInDomain = false }
+          } catch { started = false }
         }
         ctx.stroke()
 
