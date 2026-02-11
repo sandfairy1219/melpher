@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { compile, type EvalFunction } from 'mathjs'
+import { compile, derivative as mathDerivative, parse, simplify, type EvalFunction } from 'mathjs'
 import { prettifyExpr } from '../utils/prettifyExpr'
 import PrettyInput from './PrettyInput'
 
@@ -164,6 +164,108 @@ function canIntegrate(expr: string): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+function symbolicDerivative(expr: string): string | null {
+  try {
+    const result = mathDerivative(expr, 'x')
+    return simplify(result).toString()
+  } catch {
+    return null
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function containsVar(node: any, v = 'x'): boolean {
+  if (node.type === 'SymbolNode' && node.name === v) return true
+  if (node.args) return node.args.some((a: unknown) => containsVar(a, v))
+  if (node.content) return containsVar(node.content, v)
+  return false
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function integrateNode(node: any): string | null {
+  switch (node.type) {
+    case 'ConstantNode':
+      return `${node.value} * x`
+    case 'SymbolNode': {
+      if (node.name === 'x') return 'x^2 / 2'
+      return `${node.name} * x`
+    }
+    case 'ParenthesisNode':
+      return integrateNode(node.content)
+    case 'OperatorNode': {
+      const { op, args } = node
+      if (op === '-' && args.length === 1) {
+        const inner = integrateNode(args[0])
+        return inner ? `-(${inner})` : null
+      }
+      if ((op === '+' || op === '-') && args.length === 2) {
+        const l = integrateNode(args[0]), r = integrateNode(args[1])
+        return l && r ? `(${l}) ${op} (${r})` : null
+      }
+      if (op === '*' && args.length === 2) {
+        if (!containsVar(args[0])) {
+          const r = integrateNode(args[1])
+          return r ? `(${args[0]}) * (${r})` : null
+        }
+        if (!containsVar(args[1])) {
+          const l = integrateNode(args[0])
+          return l ? `(${args[1]}) * (${l})` : null
+        }
+        return null
+      }
+      if (op === '/' && args.length === 2) {
+        if (!containsVar(args[1])) {
+          const n = integrateNode(args[0])
+          return n ? `(${n}) / (${args[1]})` : null
+        }
+        if (!containsVar(args[0]) && args[1].type === 'SymbolNode' && args[1].name === 'x')
+          return `(${args[0]}) * log(abs(x))`
+        return null
+      }
+      if (op === '^' && args.length === 2) {
+        if (args[0].type === 'SymbolNode' && args[0].name === 'x' && !containsVar(args[1])) {
+          if (args[1].type === 'ConstantNode' && args[1].value === -1) return 'log(abs(x))'
+          const ns = args[1].toString()
+          return `x ^ (${ns} + 1) / (${ns} + 1)`
+        }
+        if (args[0].type === 'SymbolNode' && args[0].name === 'e' &&
+            args[1].type === 'SymbolNode' && args[1].name === 'x') return 'e^x'
+        return null
+      }
+      return null
+    }
+    case 'FunctionNode': {
+      const fnName = node.fn?.name || node.name || ''
+      const { args } = node
+      if (args.length === 1 && args[0].type === 'SymbolNode' && args[0].name === 'x') {
+        const map: Record<string, string> = {
+          sin: '-cos(x)', cos: 'sin(x)', tan: '-log(abs(cos(x)))',
+          exp: 'exp(x)', log: 'x * log(x) - x',
+          sqrt: '2/3 * x ^ (3/2)',
+          asin: 'x * asin(x) + sqrt(1 - x^2)',
+          acos: 'x * acos(x) - sqrt(1 - x^2)',
+          atan: 'x * atan(x) - log(1 + x^2) / 2',
+        }
+        return map[fnName] ?? null
+      }
+      return null
+    }
+    default:
+      return null
+  }
+}
+
+function symbolicIntegrate(expr: string): string | null {
+  try {
+    const node = parse(expr)
+    const result = integrateNode(node)
+    if (!result) return null
+    return simplify(result).toString()
+  } catch {
+    return null
   }
 }
 
@@ -346,6 +448,7 @@ export default function Graph() {
     }
 
     // Draw functions + extrema
+    let labelRow = 0
     for (let fi = 0; fi < functions.length; fi++) {
       const fn = functions[fi]
       if (!fn.visible) continue
@@ -535,15 +638,20 @@ export default function Graph() {
           ctx.restore()
 
           // f'(x) label
-          const labelText = `f'(𝑥) = ${prettifyExpr(fn.expr)}'`
+          const derivResult = symbolicDerivative(fn.expr)
+          const labelText = derivResult
+            ? `f'(𝑥) = ${prettifyExpr(derivResult)}`
+            : `f'(𝑥) = ${prettifyExpr(fn.expr)}'`
           ctx.font = 'bold 11px sans-serif'
           const labelW = ctx.measureText(labelText).width
+          const labelY = 8 + labelRow * 20
           ctx.fillStyle = 'rgba(15, 22, 41, 0.85)'
-          ctx.fillRect(w - labelW - 18, 8 + fi * 40, labelW + 12, 17)
+          ctx.fillRect(w - labelW - 18, labelY, labelW + 12, 17)
           ctx.fillStyle = derivColor
           ctx.textAlign = 'left'
           ctx.textBaseline = 'top'
-          ctx.fillText(labelText, w - labelW - 12, 10 + fi * 40)
+          ctx.fillText(labelText, w - labelW - 12, labelY + 2)
+          labelRow++
         }
 
         // --- Draw integral curve (numerical, from x=0) ---
@@ -644,15 +752,20 @@ export default function Graph() {
           ctx.restore()
 
           // F(x) label
-          const intLabel = `F(𝑥)`
+          const intResult = symbolicIntegrate(fn.expr)
+          const intLabel = intResult
+            ? `F(𝑥) = ${prettifyExpr(intResult)}`
+            : `F(𝑥) = ∫${prettifyExpr(fn.expr)} d𝑥`
           ctx.font = 'bold 11px sans-serif'
           const intLabelW = ctx.measureText(intLabel).width
+          const intLabelY = 8 + labelRow * 20
           ctx.fillStyle = 'rgba(15, 22, 41, 0.85)'
-          ctx.fillRect(w - intLabelW - 18, 28 + fi * 40, intLabelW + 12, 17)
+          ctx.fillRect(w - intLabelW - 18, intLabelY, intLabelW + 12, 17)
           ctx.fillStyle = integColor
           ctx.textAlign = 'left'
           ctx.textBaseline = 'top'
-          ctx.fillText(intLabel, w - intLabelW - 12, 30 + fi * 40)
+          ctx.fillText(intLabel, w - intLabelW - 12, intLabelY + 2)
+          labelRow++
         }
 
       } catch {
