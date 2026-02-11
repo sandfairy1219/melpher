@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { evaluate } from 'mathjs'
+import { prettifyExpr } from '../utils/prettifyExpr'
 
 interface HistoryEntry {
   expression: string
@@ -82,7 +83,7 @@ export default function Calculator() {
         )}
         {history.map((entry, i) => (
           <div key={i} className="calc-entry">
-            <div className="calc-expr">{entry.expression}</div>
+            <div className="calc-expr">{prettifyExpr(entry.expression)}</div>
             <div className={`calc-result ${entry.isError ? 'error' : ''}`}>
               = {entry.result}
             </div>

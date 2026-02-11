@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { compile, type EvalFunction } from 'mathjs'
+import { prettifyExpr } from '../utils/prettifyExpr'
 
 interface FunctionEntry {
   expr: string
@@ -925,7 +926,7 @@ export default function Graph() {
     { label: 'sin(x)', value: 'sin(x)' },
     { label: 'x²', value: 'x^2' },
     { label: 'cos(x)', value: 'cos(x)' },
-    { label: '1/x', value: '1/x' },
+    { label: '1÷x', value: '1/x' },
     { label: 'tan(x)', value: 'tan(x)' },
     { label: 'log(x)', value: 'log(x, 10)' },
   ]
@@ -1038,7 +1039,7 @@ export default function Graph() {
                 onClick={(e) => { e.stopPropagation(); toggleFunction(i) }}
               />
               <code className="graph-fn-expr" style={{ color: fn.visible ? fn.color : 'var(--text-dim)' }}>
-                {fn.expr}
+                {prettifyExpr(fn.expr)}
                 {(fn.dx !== 0 || fn.dy !== 0) && (
                   <span className="graph-fn-offset">
                     {fn.dx !== 0 ? ` ${fn.dx > 0 ? '+' : ''}${formatNumber(fn.dx)}x` : ''}
@@ -1102,7 +1103,7 @@ export default function Graph() {
           {allExtrema.map((entry, i) => (
             <div key={i} className="graph-extrema-fn">
               <code className="graph-extrema-expr" style={{ color: entry.color }}>
-                {entry.expr}
+                {prettifyExpr(entry.expr)}
               </code>
               <div className="graph-extrema-list">
                 {entry.extrema.map((ext, j) => (
@@ -1127,7 +1128,7 @@ export default function Graph() {
           {allRoots.map((entry, i) => (
             <div key={i} className="graph-extrema-fn">
               <code className="graph-extrema-expr" style={{ color: entry.color }}>
-                {entry.expr}
+                {prettifyExpr(entry.expr)}
               </code>
               <div className="graph-extrema-list">
                 {entry.roots.map((rx, j) => (

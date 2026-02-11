@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import * as math from 'mathjs'
+import { prettifyExpr } from '../utils/prettifyExpr'
 
 interface Solution {
   input: string
@@ -249,7 +250,7 @@ export default function Equation() {
               className="eq-example-btn"
               onClick={() => { setInput(ex); }}
             >
-              {ex}
+              {prettifyExpr(ex)}
             </button>
           ))}
         </div>
@@ -267,7 +268,7 @@ export default function Equation() {
           <div key={i} className={`eq-card ${sol.error ? 'eq-error' : ''}`}>
             <div className="eq-problem">
               <span className="eq-label">문제</span>
-              <code>{sol.input}</code>
+              <code>{prettifyExpr(sol.input)}</code>
             </div>
             {sol.error ? (
               <div className="eq-error-msg">{sol.error}</div>
@@ -276,7 +277,7 @@ export default function Equation() {
                 <span className="eq-label">해</span>
                 {sol.roots.map((root, j) => (
                   <div key={j} className="eq-root">
-                    <span className="eq-var">{sol.variable}</span> = <span className="eq-value">{root}</span>
+                    <span className="eq-var">{sol.variable}</span> = <span className="eq-value">{prettifyExpr(root)}</span>
                   </div>
                 ))}
               </div>
