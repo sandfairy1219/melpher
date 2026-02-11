@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { compile, type EvalFunction } from 'mathjs'
 import { prettifyExpr } from '../utils/prettifyExpr'
+import PrettyInput from './PrettyInput'
 
 interface FunctionEntry {
   expr: string
@@ -12,6 +13,8 @@ interface FunctionEntry {
   domainMax: number | null
   domainMinOpen: boolean
   domainMaxOpen: boolean
+  showDerivative: boolean
+  showIntegral: boolean
 }
 
 interface Extremum {
@@ -131,17 +134,53 @@ function findRoots(compiled: EvalFunction, xMin: number, xMax: number): number[]
   return roots
 }
 
+function canIntegrate(expr: string): boolean {
+  try {
+    const compiled = compile(expr)
+    // x=0 근처와 여러 샘플 포인트에서 유한한 값이 나오는지 검사
+    const testPoints = [0, 0.001, -0.001, 0.5, -0.5, 1, -1, 2, -2, 5, -5]
+    let validCount = 0
+    let infCount = 0
+    for (const x of testPoints) {
+      try {
+        const y = compiled.evaluate({ x }) as number
+        if (!isFinite(y) || isNaN(y)) infCount++
+        else validCount++
+      } catch {
+        infCount++
+      }
+    }
+    // 유효한 점이 너무 적거나 x=0에서 발산하면 적분 불가
+    if (validCount < 3) return false
+    // x=0 근처(-0.001 ~ 0.001)에서 발산하면 적분 기준점이 없으므로 불가
+    for (const x of [0, 0.001, -0.001]) {
+      try {
+        const y = compiled.evaluate({ x }) as number
+        if (!isFinite(y) || isNaN(y)) return false
+      } catch {
+        return false
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 const COLORS = ['#6c63ff', '#ff6584', '#4caf50', '#ffa726', '#26c6da', '#ab47bc']
+const TANGENT_COLOR = '#ffeb3b'
+const DERIVATIVE_COLORS = ['#e040fb', '#00e5ff', '#ff6e40', '#76ff03', '#f50057', '#d500f9']
+const INTEGRAL_COLORS = ['#18ffff', '#b2ff59', '#ff9100', '#ea80fc', '#64ffda', '#ffd740']
 
 const mathButtons = [
   { label: '+', value: ' + ' },
   { label: '−', value: ' - ' },
   { label: '×', value: ' * ' },
   { label: '÷', value: ' / ' },
-  { label: 'x', value: 'x' },
-  { label: 'x²', value: 'x^2' },
-  { label: 'x³', value: 'x^3' },
-  { label: 'xⁿ', value: '^' },
+  { label: '𝑥', value: 'x' },
+  { label: '𝑥²', value: 'x^2' },
+  { label: '𝑥³', value: 'x^3' },
+  { label: '𝑥ⁿ', value: '^' },
   { label: '√', value: 'sqrt(' },
   { label: 'sin', value: 'sin(' },
   { label: 'cos', value: 'cos(' },
@@ -166,7 +205,13 @@ export default function Graph() {
   const [view, setView] = useState({ cx: 0, cy: 0, scale: 50 }) // scale = pixels per unit
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
-  const [magnetMode, setMagnetMode] = useState<'off' | 'extrema' | 'roots'>('off')
+  const [magnetMode, setMagnetMode] = useState(false)
+  const [tangentMode, setTangentMode] = useState(false)
+  const tangentInfoRef = useRef<{ fnIndex: number; wx: number; wy: number; slope: number; color: string } | null>(null)
+  const [pinnedTangents, setPinnedTangents] = useState<{ wx: number; wy: number; slope: number; color: string }[]>([])
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [editingExpr, setEditingExpr] = useState('')
+  const editInputRef = useRef<HTMLInputElement>(null)
   const clipboardRef = useRef<FunctionEntry | null>(null)
   const longPressRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; startX: number; startY: number }>({
     timer: null, startX: 0, startY: 0,
@@ -460,9 +505,266 @@ export default function Graph() {
           ctx.textBaseline = 'top'
           ctx.fillText(rootLabel, rlx, rly)
         }
+        // --- Draw derivative curve ---
+        if (fn.showDerivative) {
+          const derivColor = DERIVATIVE_COLORS[fi % DERIVATIVE_COLORS.length]
+          ctx.save()
+          ctx.setLineDash([6, 4])
+          ctx.strokeStyle = derivColor
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          let dStarted = false
+          const dh = 1e-6
+          for (let px = 0; px <= w; px += 2) {
+            const dx = toWorldX(px) - fn.dx
+            const dInSeg = inDomain(dx, fn)
+            if (!dInSeg) { dStarted = false; continue }
+            try {
+              const fLeft = compiled.evaluate({ x: dx - dh }) as number
+              const fRight = compiled.evaluate({ x: dx + dh }) as number
+              if (!isFinite(fLeft) || !isFinite(fRight)) { dStarted = false; continue }
+              const dy = (fRight - fLeft) / (2 * dh)
+              const sy = toScreenY(dy + fn.dy)
+              if (sy < -h * 2 || sy > h * 3) { dStarted = false; continue }
+              if (!dStarted) { ctx.moveTo(px, sy); dStarted = true }
+              else ctx.lineTo(px, sy)
+            } catch { dStarted = false }
+          }
+          ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
+
+          // f'(x) label
+          const labelText = `f'(𝑥) = ${prettifyExpr(fn.expr)}'`
+          ctx.font = 'bold 11px sans-serif'
+          const labelW = ctx.measureText(labelText).width
+          ctx.fillStyle = 'rgba(15, 22, 41, 0.85)'
+          ctx.fillRect(w - labelW - 18, 8 + fi * 40, labelW + 12, 17)
+          ctx.fillStyle = derivColor
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'top'
+          ctx.fillText(labelText, w - labelW - 12, 10 + fi * 40)
+        }
+
+        // --- Draw integral curve (numerical, from x=0) ---
+        if (fn.showIntegral) {
+          const integColor = INTEGRAL_COLORS[fi % INTEGRAL_COLORS.length]
+          ctx.save()
+          ctx.setLineDash([10, 4])
+          ctx.strokeStyle = integColor
+          ctx.lineWidth = 2
+          ctx.beginPath()
+
+          // 화면 왼쪽 ~ 오른쪽을 pixel 단위로 순회하면서 사다리꼴 적분
+          const step = 2 // pixel step
+          const totalPx = Math.ceil(w / step)
+          // 먼저 x=0 위치(pixel)를 기준으로 좌/우로 적분
+          const originPx = Math.round((0 - cx) * scale + w / 2)
+
+          // 모든 pixel에 대한 적분값 배열
+          const integralVals: (number | null)[] = new Array(totalPx + 1).fill(null)
+
+          // x=0 -> 적분값 0
+          const zeroPxIdx = Math.round(originPx / step)
+          if (zeroPxIdx >= 0 && zeroPxIdx <= totalPx) {
+            integralVals[zeroPxIdx] = 0
+          }
+
+          // 오른쪽으로 적분
+          let acc = 0
+          const startRight = Math.max(0, zeroPxIdx)
+          for (let idx = startRight; idx <= totalPx; idx++) {
+            const px = idx * step
+            const xVal = toWorldX(px) - fn.dx
+            if (!inDomain(xVal, fn)) { integralVals[idx] = null; continue }
+            try {
+              const fVal = compiled.evaluate({ x: xVal }) as number
+              if (!isFinite(fVal) || isNaN(fVal)) { integralVals[idx] = null; continue }
+              if (idx === startRight) {
+                if (zeroPxIdx >= 0 && zeroPxIdx <= totalPx) acc = 0
+                else {
+                  acc = 0 // 화면 밖 시작이면 0부터
+                }
+              }
+              if (idx > startRight && integralVals[idx - 1] !== null) {
+                const prevX = toWorldX((idx - 1) * step) - fn.dx
+                try {
+                  const prevF = compiled.evaluate({ x: prevX }) as number
+                  if (isFinite(prevF)) {
+                    const dx2 = xVal - prevX
+                    acc += (prevF + fVal) / 2 * dx2 // trapezoidal
+                  }
+                } catch { /* skip */ }
+              }
+              integralVals[idx] = acc
+            } catch { integralVals[idx] = null }
+          }
+
+          // 왼쪽으로 적분
+          acc = 0
+          const startLeft = Math.min(totalPx, zeroPxIdx)
+          for (let idx = startLeft; idx >= 0; idx--) {
+            const px = idx * step
+            const xVal = toWorldX(px) - fn.dx
+            if (!inDomain(xVal, fn)) { integralVals[idx] = null; continue }
+            try {
+              const fVal = compiled.evaluate({ x: xVal }) as number
+              if (!isFinite(fVal) || isNaN(fVal)) { integralVals[idx] = null; continue }
+              if (idx === startLeft) {
+                if (zeroPxIdx >= 0 && zeroPxIdx <= totalPx) acc = 0
+                else acc = 0
+              }
+              if (idx < startLeft && integralVals[idx + 1] !== null) {
+                const nextX = toWorldX((idx + 1) * step) - fn.dx
+                try {
+                  const nextF = compiled.evaluate({ x: nextX }) as number
+                  if (isFinite(nextF)) {
+                    const dx2 = xVal - nextX // negative
+                    acc += (nextF + fVal) / 2 * dx2
+                  }
+                } catch { /* skip */ }
+              }
+              integralVals[idx] = acc
+            } catch { integralVals[idx] = null }
+          }
+
+          // 그리기
+          let iStarted = false
+          for (let idx = 0; idx <= totalPx; idx++) {
+            const val = integralVals[idx]
+            if (val === null) { iStarted = false; continue }
+            const sy = toScreenY(val + fn.dy)
+            if (sy < -h * 2 || sy > h * 3) { iStarted = false; continue }
+            const px = idx * step
+            if (!iStarted) { ctx.moveTo(px, sy); iStarted = true }
+            else ctx.lineTo(px, sy)
+          }
+          ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
+
+          // F(x) label
+          const intLabel = `F(𝑥)`
+          ctx.font = 'bold 11px sans-serif'
+          const intLabelW = ctx.measureText(intLabel).width
+          ctx.fillStyle = 'rgba(15, 22, 41, 0.85)'
+          ctx.fillRect(w - intLabelW - 18, 28 + fi * 40, intLabelW + 12, 17)
+          ctx.fillStyle = integColor
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'top'
+          ctx.fillText(intLabel, w - intLabelW - 12, 30 + fi * 40)
+        }
+
       } catch {
         // Invalid expression, skip
       }
+    }
+
+    // --- Tangent drawing helper ---
+    const drawTangent = (
+      wx: number, wy: number, slope: number, color: string,
+      dashed: boolean, showCoord: boolean,
+    ) => {
+      const intercept = wy - slope * wx
+      const tY0 = slope * xMin + intercept
+      const tY1 = slope * xMax + intercept
+
+      ctx.save()
+      if (dashed) ctx.setLineDash([8, 6])
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2
+      ctx.globalAlpha = dashed ? 0.8 : 0.9
+      ctx.beginPath()
+      ctx.moveTo(toScreenX(xMin), toScreenY(tY0))
+      ctx.lineTo(toScreenX(xMax), toScreenY(tY1))
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.globalAlpha = 1.0
+      ctx.restore()
+
+      const tpx = toScreenX(wx)
+      const tpy = toScreenY(wy)
+      ctx.beginPath()
+      ctx.arc(tpx, tpy, 5, 0, Math.PI * 2)
+      ctx.fillStyle = color
+      ctx.fill()
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+
+      // Equation label
+      const m = formatNumber(slope)
+      const b = intercept
+      let eqText: string
+      if (Math.abs(slope) < 1e-10) {
+        eqText = `y = ${formatNumber(b)}`
+      } else if (Math.abs(b) < 1e-10) {
+        eqText = `y = ${m}𝑥`
+      } else {
+        eqText = b > 0 ? `y = ${m}𝑥 + ${formatNumber(b)}` : `y = ${m}𝑥 − ${formatNumber(Math.abs(b))}`
+      }
+
+      ctx.font = 'bold 12px "JetBrains Mono", monospace'
+      const eqWidth = ctx.measureText(eqText).width
+      const boxPad = 6
+      let lx = tpx + 12
+      let ly = tpy - 24
+      if (lx + eqWidth + boxPad * 2 > w) lx = tpx - eqWidth - boxPad * 2 - 12
+      if (ly < 10) ly = tpy + 14
+
+      ctx.fillStyle = 'rgba(15, 22, 41, 0.9)'
+      ctx.beginPath()
+      const boxR = 5
+      const boxX = lx - boxPad
+      const boxY = ly - boxPad
+      const boxW = eqWidth + boxPad * 2
+      const boxH = 16 + boxPad * 2
+      ctx.moveTo(boxX + boxR, boxY)
+      ctx.lineTo(boxX + boxW - boxR, boxY)
+      ctx.quadraticCurveTo(boxX + boxW, boxY, boxX + boxW, boxY + boxR)
+      ctx.lineTo(boxX + boxW, boxY + boxH - boxR)
+      ctx.quadraticCurveTo(boxX + boxW, boxY + boxH, boxX + boxW - boxR, boxY + boxH)
+      ctx.lineTo(boxX + boxR, boxY + boxH)
+      ctx.quadraticCurveTo(boxX, boxY + boxH, boxX, boxY + boxH - boxR)
+      ctx.lineTo(boxX, boxY + boxR)
+      ctx.quadraticCurveTo(boxX, boxY, boxX + boxR, boxY)
+      ctx.fill()
+      ctx.strokeStyle = color + '60'
+      ctx.lineWidth = 1
+      ctx.stroke()
+
+      ctx.fillStyle = color
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'top'
+      ctx.fillText(eqText, lx, ly)
+
+      if (showCoord) {
+        const coordText = `(${formatNumber(wx)}, ${formatNumber(wy)})`
+        ctx.font = '11px sans-serif'
+        const coordWidth = ctx.measureText(coordText).width
+        let clx = tpx + 12
+        let cly = ly + boxH + 2
+        if (clx + coordWidth > w) clx = tpx - coordWidth - 12
+        if (cly + 14 > h) cly = ly - 16
+
+        ctx.fillStyle = 'rgba(15, 22, 41, 0.85)'
+        ctx.fillRect(clx - 3, cly - 1, coordWidth + 6, 15)
+        ctx.fillStyle = '#8892a4'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'top'
+        ctx.fillText(coordText, clx, cly)
+      }
+    }
+
+    // Draw pinned tangent lines (solid)
+    for (const pt of pinnedTangents) {
+      drawTangent(pt.wx, pt.wy, pt.slope, pt.color, false, false)
+    }
+
+    // Draw hover tangent preview (dashed)
+    const tInfo = tangentInfoRef.current
+    if (tInfo) {
+      drawTangent(tInfo.wx, tInfo.wy, tInfo.slope, tInfo.color, true, true)
     }
 
     // Origin label
@@ -473,7 +775,7 @@ export default function Graph() {
       ctx.textBaseline = 'top'
       ctx.fillText('0', originX - 4, originY + 4)
     }
-  }, [view, functions, getCanvasSize, selectedIndex])
+  }, [view, functions, getCanvasSize, selectedIndex, pinnedTangents])
 
   // Resize canvas
   useEffect(() => {
@@ -541,6 +843,13 @@ export default function Graph() {
     const sx = (e.clientX - rect.left) * (canvas.width / rect.width)
     const sy = (e.clientY - rect.top) * (canvas.height / rect.height)
 
+    // 접선 모드에서 클릭하면 현재 프리뷰를 고정
+    if (tangentMode && tangentInfoRef.current) {
+      const { wx, wy, slope, color } = tangentInfoRef.current
+      setPinnedTangents((prev) => [...prev, { wx, wy, slope, color }])
+      return
+    }
+
     const hitIndex = hitTestCurve(sx, sy)
 
     if (hitIndex >= 0) {
@@ -552,8 +861,109 @@ export default function Graph() {
     }
   }
 
+  const computeTangent = useCallback((screenX: number, screenY: number) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const { w, h } = getCanvasSize()
+    const { cx, cy, scale } = view
+    const toWorldX = (sx: number) => (sx - w / 2) / scale + cx
+    const threshold = 20
+
+    let bestIndex = -1
+    let bestDist = threshold
+
+    for (let fi = 0; fi < functions.length; fi++) {
+      const fn = functions[fi]
+      if (!fn.visible) continue
+      try {
+        const compiled = compile(fn.expr)
+        const wx = toWorldX(screenX) - fn.dx
+        const wy = (compiled.evaluate({ x: wx }) as number) + fn.dy
+        if (!isFinite(wy)) continue
+        const sy = h / 2 - (wy - cy) * scale
+        const dist = Math.abs(sy - screenY)
+        if (dist < bestDist) {
+          bestDist = dist
+          bestIndex = fi
+        }
+      } catch { /* skip */ }
+    }
+
+    if (bestIndex < 0) {
+      tangentInfoRef.current = null
+      draw()
+      return
+    }
+
+    const fn = functions[bestIndex]
+    try {
+      const compiled = compile(fn.expr)
+      let wx = toWorldX(screenX) - fn.dx
+
+      // 마그넷 ON이면 가장 가까운 극값/근으로 스냅
+      if (magnetMode) {
+        const searchMin = toWorldX(0) - fn.dx
+        const searchMax = toWorldX(w) - fn.dx
+        const snapPoints: { x: number; dist: number }[] = []
+
+        // 극값
+        const extrema = findExtrema(compiled, searchMin, searchMax)
+        for (const ext of extrema) {
+          snapPoints.push({ x: ext.x, dist: Math.abs(ext.x - wx) })
+        }
+
+        // 근
+        const roots = findRoots(compiled, searchMin, searchMax)
+        for (const rx of roots) {
+          snapPoints.push({ x: rx, dist: Math.abs(rx - wx) })
+        }
+
+        if (snapPoints.length > 0) {
+          const snapThreshold = 1.5 / scale * 50 // 화면 기준 약 1.5 단위
+          snapPoints.sort((a, b) => a.dist - b.dist)
+          if (snapPoints[0].dist < snapThreshold) {
+            wx = snapPoints[0].x
+          }
+        }
+      }
+
+      const hh = 1e-6
+      const fl = compiled.evaluate({ x: wx - hh }) as number
+      const fr = compiled.evaluate({ x: wx + hh }) as number
+      const fy = compiled.evaluate({ x: wx }) as number
+      if (!isFinite(fl) || !isFinite(fr) || !isFinite(fy)) {
+        tangentInfoRef.current = null
+        draw()
+        return
+      }
+      const slope = (fr - fl) / (2 * hh)
+      tangentInfoRef.current = {
+        fnIndex: bestIndex,
+        wx: wx + fn.dx,
+        wy: fy + fn.dy,
+        slope,
+        color: TANGENT_COLOR,
+      }
+      draw()
+    } catch {
+      tangentInfoRef.current = null
+      draw()
+    }
+  }, [functions, view, getCanvasSize, draw, magnetMode])
+
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!dragRef.current.dragging) return
+    if (!dragRef.current.dragging) {
+      if (tangentMode) {
+        const canvas = canvasRef.current
+        if (canvas) {
+          const rect = canvas.getBoundingClientRect()
+          const sx = (e.clientX - rect.left) * (canvas.width / rect.width)
+          const sy = (e.clientY - rect.top) * (canvas.height / rect.height)
+          computeTangent(sx, sy)
+        }
+      }
+      return
+    }
     const mx = e.clientX - dragRef.current.lastX
     const my = e.clientY - dragRef.current.lastY
     dragRef.current.lastX = e.clientX
@@ -576,7 +986,7 @@ export default function Graph() {
   }
 
   const applyMagnetSnap = () => {
-    if (magnetMode === 'off') return
+    if (!magnetMode) return
     if (dragRef.current.mode !== 'graph') return
     const gi = dragRef.current.graphIndex
     const fn = functions[gi]
@@ -589,69 +999,55 @@ export default function Graph() {
       const visXMin = (0 - w / 2) / scale + cx
       const visXMax = (w - w / 2) / scale + cx
 
-      if (magnetMode === 'extrema') {
-        const extrema = findExtrema(compiled, visXMin - fn.dx, visXMax - fn.dx)
-        if (extrema.length === 0) return
+      let bestDx = fn.dx, bestDy = fn.dy, bestDist = Infinity
 
-        let bestDx = fn.dx, bestDy = fn.dy, bestDist = Infinity
-        for (const ext of extrema) {
-          const candidateDx = Math.round(ext.x + fn.dx) - ext.x
-          const candidateDy = Math.round(ext.y + fn.dy) - ext.y
-          const dist = (candidateDx - fn.dx) ** 2 + (candidateDy - fn.dy) ** 2
-          if (dist < bestDist) {
-            bestDist = dist
-            bestDx = candidateDx
-            bestDy = candidateDy
-          }
+      // 극값 스냅
+      const extrema = findExtrema(compiled, visXMin - fn.dx, visXMax - fn.dx)
+      for (const ext of extrema) {
+        const candidateDx = Math.round(ext.x + fn.dx) - ext.x
+        const candidateDy = Math.round(ext.y + fn.dy) - ext.y
+        const dist = (candidateDx - fn.dx) ** 2 + (candidateDy - fn.dy) ** 2
+        if (dist < bestDist) {
+          bestDist = dist
+          bestDx = candidateDx
+          bestDy = candidateDy
         }
+      }
 
+      // 근 스냅
+      const approxRoots: number[] = []
+      const samples = 500
+      const sampleStep = (visXMax - visXMin) / samples
+      let prevVal: number | null = null
+      for (let i = 0; i <= samples; i++) {
+        const x = visXMin + i * sampleStep
+        try {
+          const val = (compiled.evaluate({ x: x - fn.dx }) as number) + fn.dy
+          if (!isFinite(val) || isNaN(val)) { prevVal = null; continue }
+          if (prevVal !== null && prevVal * val < 0) approxRoots.push(x - sampleStep / 2)
+          if (Math.abs(val) < 1e-12) approxRoots.push(x)
+          prevVal = val
+        } catch { prevVal = null }
+      }
+      for (const rx of approxRoots) {
+        for (const intX of [Math.floor(rx), Math.ceil(rx)]) {
+          try {
+            const fVal = compiled.evaluate({ x: intX - fn.dx }) as number
+            if (!isFinite(fVal)) continue
+            const candidateDy = -fVal
+            const dist = (fn.dx - fn.dx) ** 2 + (candidateDy - fn.dy) ** 2
+            if (dist < bestDist) {
+              bestDist = dist
+              bestDx = fn.dx
+              bestDy = candidateDy
+            }
+          } catch { continue }
+        }
+      }
+
+      if (bestDist < Infinity) {
         setFunctions((prev) =>
           prev.map((f, i) => i === gi ? { ...f, dx: bestDx, dy: bestDy } : f)
-        )
-      } else if (magnetMode === 'roots') {
-        // 화면에서 y=0을 지나는 대략적 x 위치 찾기 (displayed: f(x-dx)+dy)
-        const approxRoots: number[] = []
-        const samples = 500
-        const sampleStep = (visXMax - visXMin) / samples
-        let prevVal: number | null = null
-
-        for (let i = 0; i <= samples; i++) {
-          const x = visXMin + i * sampleStep
-          try {
-            const val = (compiled.evaluate({ x: x - fn.dx }) as number) + fn.dy
-            if (!isFinite(val) || isNaN(val)) { prevVal = null; continue }
-            if (prevVal !== null && prevVal * val < 0) {
-              approxRoots.push(x - sampleStep / 2)
-            }
-            if (Math.abs(val) < 1e-12) {
-              approxRoots.push(x)
-            }
-            prevVal = val
-          } catch { prevVal = null }
-        }
-
-        if (approxRoots.length === 0) return
-
-        // 각 근 근처 정수 x에서 dy를 조정하여 근이 정수에 오도록
-        let bestDy = fn.dy, bestDist = Infinity
-        for (const rx of approxRoots) {
-          for (const intX of [Math.floor(rx), Math.ceil(rx)]) {
-            try {
-              const fVal = compiled.evaluate({ x: intX - fn.dx }) as number
-              if (!isFinite(fVal)) continue
-              // f(intX - dx) + dy_new = 0 → dy_new = -f(intX - dx)
-              const candidateDy = -fVal
-              const dist = Math.abs(candidateDy - fn.dy)
-              if (dist < bestDist) {
-                bestDist = dist
-                bestDy = candidateDy
-              }
-            } catch { continue }
-          }
-        }
-
-        setFunctions((prev) =>
-          prev.map((f, i) => i === gi ? { ...f, dy: bestDy } : f)
         )
       }
     } catch { /* skip */ }
@@ -660,6 +1056,14 @@ export default function Graph() {
   const handleMouseUp = () => {
     if (dragRef.current.dragging) applyMagnetSnap()
     dragRef.current.dragging = false
+  }
+
+  const handleMouseLeaveCanvas = () => {
+    handleMouseUp()
+    if (tangentMode) {
+      tangentInfoRef.current = null
+      draw()
+    }
   }
 
   // Touch handlers for mobile
@@ -789,7 +1193,7 @@ export default function Graph() {
     if (!expr) return
     setFunctions((prev) => [
       ...prev,
-      { expr, color: COLORS[prev.length % COLORS.length], visible: true, dx: 0, dy: 0, domainMin: null, domainMax: null, domainMinOpen: false, domainMaxOpen: false },
+      { expr, color: COLORS[prev.length % COLORS.length], visible: true, dx: 0, dy: 0, domainMin: null, domainMax: null, domainMinOpen: false, domainMaxOpen: false, showDerivative: false, showIntegral: false },
     ])
     setInput('')
   }
@@ -802,6 +1206,27 @@ export default function Graph() {
       if (prev > index) return prev - 1
       return prev
     })
+  }
+
+  const startEditing = (index: number) => {
+    setEditingIndex(index)
+    setEditingExpr(functions[index].expr)
+    requestAnimationFrame(() => editInputRef.current?.focus())
+  }
+
+  const commitEditing = () => {
+    if (editingIndex === null) return
+    const expr = editingExpr.trim()
+    if (expr) {
+      setFunctions((prev) => prev.map((fn, i) => i === editingIndex ? { ...fn, expr } : fn))
+    }
+    setEditingIndex(null)
+    setEditingExpr('')
+  }
+
+  const cancelEditing = () => {
+    setEditingIndex(null)
+    setEditingExpr('')
   }
 
   const toggleFunction = (index: number) => {
@@ -936,9 +1361,26 @@ export default function Graph() {
       <div className="graph-toolbar">
         <div className="magnet-toggle-group">
           <span className="magnet-label">마그넷:</span>
-          <button className={`magnet-btn${magnetMode === 'off' ? ' active' : ''}`} onClick={() => setMagnetMode('off')}>OFF</button>
-          <button className={`magnet-btn${magnetMode === 'extrema' ? ' active' : ''}`} onClick={() => setMagnetMode('extrema')}>극값</button>
-          <button className={`magnet-btn${magnetMode === 'roots' ? ' active' : ''}`} onClick={() => setMagnetMode('roots')}>근</button>
+          <button className={`magnet-btn${!magnetMode ? ' active' : ''}`} onClick={() => setMagnetMode(false)}>OFF</button>
+          <button className={`magnet-btn${magnetMode ? ' active' : ''}`} onClick={() => setMagnetMode(true)}>ON</button>
+        </div>
+        <div className="magnet-toggle-group">
+          <span className="magnet-label">접선:</span>
+          <button
+            className={`magnet-btn${!tangentMode ? ' active' : ''}`}
+            onClick={() => { setTangentMode(false); tangentInfoRef.current = null }}
+          >OFF</button>
+          <button
+            className={`magnet-btn${tangentMode ? ' active' : ''}`}
+            onClick={() => setTangentMode(true)}
+          >ON</button>
+          {pinnedTangents.length > 0 && (
+            <button
+              className="magnet-btn"
+              onClick={() => setPinnedTangents([])}
+              title="접선 모두 지우기"
+            >지우기 ({pinnedTangents.length})</button>
+          )}
         </div>
         {selectedIndex !== null && functions[selectedIndex] && (
           <div className="domain-setting-group">
@@ -985,14 +1427,13 @@ export default function Graph() {
       </div>
       <div className="graph-input-section">
         <div className="graph-input-row">
-          <span className="graph-fx">f(x) =</span>
-          <input
+          <span className="graph-fx">f(𝑥) =</span>
+          <PrettyInput
             ref={inputRef}
-            type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="함수 입력... (예: sin(x), x^2)"
+            placeholder="함수 입력... (예: sin(𝑥), 𝑥²)"
             className="graph-input"
           />
           <button onClick={addFunction} className="graph-add-btn">추가</button>
@@ -1031,28 +1472,69 @@ export default function Graph() {
             <div
               key={i}
               className={`graph-fn-item ${selectedIndex === i ? 'selected' : ''}`}
-              onClick={() => setSelectedIndex(selectedIndex === i ? null : i)}
+              onClick={() => { if (editingIndex !== i) setSelectedIndex(selectedIndex === i ? null : i) }}
+              onDoubleClick={(e) => { e.stopPropagation(); startEditing(i) }}
             >
               <button
                 className="graph-fn-toggle"
                 style={{ background: fn.visible ? fn.color : 'transparent', borderColor: fn.color }}
                 onClick={(e) => { e.stopPropagation(); toggleFunction(i) }}
               />
-              <code className="graph-fn-expr" style={{ color: fn.visible ? fn.color : 'var(--text-dim)' }}>
-                {prettifyExpr(fn.expr)}
-                {(fn.dx !== 0 || fn.dy !== 0) && (
-                  <span className="graph-fn-offset">
-                    {fn.dx !== 0 ? ` ${fn.dx > 0 ? '+' : ''}${formatNumber(fn.dx)}x` : ''}
-                    {fn.dy !== 0 ? ` ${fn.dy > 0 ? '+' : ''}${formatNumber(fn.dy)}y` : ''}
-                  </span>
-                )}
-              </code>
+              {editingIndex === i ? (
+                <input
+                  ref={editInputRef}
+                  className="graph-fn-edit-input"
+                  style={{ color: fn.color }}
+                  value={editingExpr}
+                  onChange={(e) => setEditingExpr(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitEditing()
+                    if (e.key === 'Escape') cancelEditing()
+                  }}
+                  onBlur={commitEditing}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <code className="graph-fn-expr" style={{ color: fn.visible ? fn.color : 'var(--text-dim)' }}>
+                  {prettifyExpr(fn.expr)}
+                  {(fn.dx !== 0 || fn.dy !== 0) && (
+                    <span className="graph-fn-offset">
+                      {fn.dx !== 0 ? ` ${fn.dx > 0 ? '+' : ''}${formatNumber(fn.dx)}x` : ''}
+                      {fn.dy !== 0 ? ` ${fn.dy > 0 ? '+' : ''}${formatNumber(fn.dy)}y` : ''}
+                    </span>
+                  )}
+                </code>
+              )}
+              <button
+                className={`graph-fn-deriv${fn.showDerivative ? ' active' : ''}`}
+                style={fn.showDerivative ? { color: DERIVATIVE_COLORS[i % DERIVATIVE_COLORS.length] } : undefined}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setFunctions((prev) => prev.map((f, j) => j === i ? { ...f, showDerivative: !f.showDerivative } : f))
+                }}
+                title="도함수 표시"
+              >f'(𝑥)</button>
+              <button
+                className={`graph-fn-deriv${fn.showIntegral ? ' active' : ''}`}
+                style={fn.showIntegral ? { color: INTEGRAL_COLORS[i % INTEGRAL_COLORS.length] } : undefined}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (!fn.showIntegral) {
+                    if (!canIntegrate(fn.expr)) {
+                      alert('이 함수는 적분할 수 없습니다.\n정의되지 않거나 발산하는 구간이 포함되어 있습니다.')
+                      return
+                    }
+                  }
+                  setFunctions((prev) => prev.map((f, j) => j === i ? { ...f, showIntegral: !f.showIntegral } : f))
+                }}
+                title="적분 표시"
+              >F(𝑥)</button>
               <button className="graph-fn-remove" onClick={(e) => { e.stopPropagation(); removeFunction(i) }}>✕</button>
             </div>
           ))}
           {selectedIndex !== null && (
             <div className="graph-fn-hint">
-              Ctrl+C 복사 / Ctrl+X 잘라내기 / Ctrl+V 붙여넣기 / 드래그로 이동
+              더블클릭으로 수정 / Ctrl+C 복사 / Ctrl+X 잘라내기 / Ctrl+V 붙여넣기 / 드래그로 이동
             </div>
           )}
         </div>
@@ -1065,11 +1547,11 @@ export default function Graph() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
+          onMouseLeave={handleMouseLeaveCanvas}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
-          className="graph-canvas"
+          className={`graph-canvas${tangentMode ? ' tangent-mode' : ''}`}
         />
         {functions.length === 0 && (
           <div className="graph-placeholder">
@@ -1096,6 +1578,33 @@ export default function Graph() {
           </div>
         )}
       </div>
+
+      {pinnedTangents.length > 0 && (
+        <div className="graph-extrema-panel">
+          <div className="graph-extrema-title">접선</div>
+          {pinnedTangents.map((pt, i) => {
+            const m = formatNumber(pt.slope)
+            const b = pt.wy - pt.slope * pt.wx
+            let eq: string
+            if (Math.abs(pt.slope) < 1e-10) eq = `y = ${formatNumber(b)}`
+            else if (Math.abs(b) < 1e-10) eq = `y = ${m}𝑥`
+            else eq = b > 0 ? `y = ${m}𝑥 + ${formatNumber(b)}` : `y = ${m}𝑥 − ${formatNumber(Math.abs(b))}`
+            return (
+              <div key={i} className="graph-tangent-item">
+                <span className="graph-tangent-dot" style={{ background: pt.color }} />
+                <code className="graph-tangent-eq" style={{ color: pt.color }}>{eq}</code>
+                <span className="graph-extrema-coord">
+                  at ({formatNumber(pt.wx)}, {formatNumber(pt.wy)})
+                </span>
+                <button
+                  className="graph-fn-remove"
+                  onClick={() => setPinnedTangents((prev) => prev.filter((_, j) => j !== i))}
+                >✕</button>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {allExtrema.length > 0 && (
         <div className="graph-extrema-panel">
@@ -1135,7 +1644,7 @@ export default function Graph() {
                   <span key={j} className="graph-extrema-item">
                     <span className="graph-extrema-badge root">근</span>
                     <span className="graph-extrema-coord">
-                      x = {formatNumber(rx)}
+                      𝑥 = {formatNumber(rx)}
                     </span>
                   </span>
                 ))}
@@ -1347,6 +1856,42 @@ export default function Graph() {
           font-size: 0.9rem;
         }
 
+        .graph-fn-edit-input {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 0.9rem;
+          font-weight: 600;
+          background: var(--surface);
+          border: 1px solid var(--primary);
+          border-radius: 4px;
+          padding: 2px 6px;
+          outline: none;
+          min-width: 80px;
+          flex: 1;
+        }
+
+        .graph-fn-deriv {
+          padding: 2px 8px;
+          font-size: 0.75rem;
+          font-weight: 700;
+          font-family: 'JetBrains Mono', monospace;
+          background: transparent;
+          color: var(--text-dim);
+          min-width: 0;
+          border: 1px solid var(--border);
+          border-radius: 4px;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .graph-fn-deriv:hover {
+          background: var(--surface-light);
+        }
+
+        .graph-fn-deriv.active {
+          border-color: currentColor;
+          background: rgba(224, 64, 251, 0.1);
+        }
+
         .graph-fn-remove {
           padding: 2px 6px;
           font-size: 0.75rem;
@@ -1391,6 +1936,10 @@ export default function Graph() {
 
         .graph-canvas:active {
           cursor: grabbing;
+        }
+
+        .graph-canvas.tangent-mode {
+          cursor: crosshair;
         }
 
         .graph-placeholder {
@@ -1505,6 +2054,31 @@ export default function Graph() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 0.9rem;
           color: var(--text);
+        }
+
+        .graph-tangent-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 4px 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .graph-tangent-item:last-child {
+          border-bottom: none;
+        }
+
+        .graph-tangent-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+
+        .graph-tangent-eq {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 0.95rem;
+          font-weight: 600;
         }
       `}</style>
     </div>

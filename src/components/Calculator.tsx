@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { evaluate } from 'mathjs'
 import { prettifyExpr } from '../utils/prettifyExpr'
+import PrettyInput from './PrettyInput'
 
 interface HistoryEntry {
   expression: string
@@ -56,7 +57,7 @@ export default function Calculator() {
     { label: '−', value: ' - ' },
     { label: '×', value: ' * ' },
     { label: '÷', value: ' / ' },
-    { label: 'xⁿ', value: '^' },
+    { label: '𝑥ⁿ', value: '^' },
     { label: '!', value: '!' },
     { label: '√', value: 'sqrt(' },
     { label: 'sin', value: 'sin(' },
@@ -104,13 +105,12 @@ export default function Calculator() {
       </div>
 
       <div className="calc-input-row">
-        <input
+        <PrettyInput
           ref={inputRef}
-          type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="수식 입력... (예: 2+3*4)"
+          placeholder="수식 입력... (예: 2+3×4)"
           className="calc-input"
           autoFocus
         />

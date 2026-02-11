@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import * as math from 'mathjs'
 import { prettifyExpr } from '../utils/prettifyExpr'
+import PrettyInput from './PrettyInput'
 
 interface Solution {
   input: string
@@ -153,10 +154,10 @@ const mathButtons = [
   { label: '−', value: ' - ' },
   { label: '×', value: ' * ' },
   { label: '÷', value: ' / ' },
-  { label: 'x', value: 'x' },
-  { label: 'x²', value: 'x^2' },
-  { label: 'x³', value: 'x^3' },
-  { label: 'xⁿ', value: '^' },
+  { label: '𝑥', value: 'x' },
+  { label: '𝑥²', value: 'x^2' },
+  { label: '𝑥³', value: 'x^3' },
+  { label: '𝑥ⁿ', value: '^' },
   { label: '√', value: 'sqrt(' },
   { label: 'sin', value: 'sin(' },
   { label: 'cos', value: 'cos(' },
@@ -217,13 +218,12 @@ export default function Equation() {
     <div className="eq-container">
       <div className="eq-input-section">
         <div className="eq-input-row">
-          <input
+          <PrettyInput
             ref={inputRef}
-            type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="방정식 입력... (예: x^2 - 4 = 0)"
+            placeholder="방정식 입력... (예: 𝑥² − 4 = 0)"
             className="eq-input"
             autoFocus
           />
